@@ -439,26 +439,27 @@
 (comment
 
   (let [plus-guard (fn f
-                     ([] (f 0))
-                     ([k]
-                      (fn [{:keys [n] :as bindings} data]
-                        (if (some? n)
-                          (when (= data (+ n k))
+                     ([key] (f key 0))
+                     ([key k]
+                      (fn [bindings data]
+                        (if-let [binding (and (contains? bindings key)
+                                              (get bindings key))]
+                          (when (= data (+ binding k))
                             bindings)
-                          (assoc bindings :n (- data k))))))
+                          (assoc bindings key (- data k))))))
         matcher (compile [:orn {:key :hand}
                           [:strait-flush [:set
-                                          [:tuple [:? :suit] [:guard (plus-guard)]]
-                                          [:tuple [:? :suit] [:guard (plus-guard 1)]]
-                                          [:tuple [:? :suit] [:guard (plus-guard 2)]]
-                                          [:tuple [:? :suit] [:guard (plus-guard 3)]]
-                                          [:tuple [:? :suit] [:guard (plus-guard 4)]]]]
+                                          [:tuple [:? :suit] [:guard (plus-guard :rank)]]
+                                          [:tuple [:? :suit] [:guard (plus-guard :rank 1)]]
+                                          [:tuple [:? :suit] [:guard (plus-guard :rank 2)]]
+                                          [:tuple [:? :suit] [:guard (plus-guard :rank 3)]]
+                                          [:tuple [:? :suit] [:guard (plus-guard :rank 4)]]]]
                           [:strait [:set
-                                    [:tuple any? [:guard (plus-guard)]]
-                                    [:tuple any? [:guard (plus-guard 1)]]
-                                    [:tuple any? [:guard (plus-guard 2)]]
-                                    [:tuple any? [:guard (plus-guard 3)]]
-                                    [:tuple any? [:guard (plus-guard 4)]]]]
+                                    [:tuple any? [:guard (plus-guard :rank)]]
+                                    [:tuple any? [:guard (plus-guard :rank 1)]]
+                                    [:tuple any? [:guard (plus-guard :rank 2)]]
+                                    [:tuple any? [:guard (plus-guard :rank 3)]]
+                                    [:tuple any? [:guard (plus-guard :rank 4)]]]]
                           [:royal-flush [:set
                                          [:tuple [:? :suit] [:= 10]]
                                          [:tuple [:? :suit] [:= 11]]
