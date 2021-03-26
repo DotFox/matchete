@@ -368,6 +368,24 @@
       ([bindings data]
        (async/go (when (predicate data) bindings))))))
 
+(defn regex-pattern [_registry regex]
+  (let [regex (cond
+                (string? regex)
+                (re-pattern regex)
+
+                (instance? #?(:clj java.util.regex.Pattern
+                              :cljs js/RegExp)
+                           regex)
+                regex
+
+                :else
+                (throw (ex-info "Invalid regex form" {:form regex})))]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (async/go (when (and (string? data) (re-matches regex data))
+                   bindings))))))
+
 (defn ref-pattern [registry pattern-id]
   (fn f
     ([data] (f {} data))
@@ -482,7 +500,7 @@
    :maybe #'maybe-pattern
    :tuple #'tuple-pattern
    :multi #'multi-pattern
-   ;; :re
+   ;; :re #'regex-pattern
    :fn #'dynamic-predicate-pattern
    :ref #'ref-pattern
    :schema #'schema-pattern})
