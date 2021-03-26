@@ -1,8 +1,8 @@
 (ns dotfox.matchete
-  (:refer-clojure :exclude [compile])
-  (:require [clojure.core.async :as async]))
+  (:require [clojure.core.async :as async]
+            [sci.core :as sci]))
 
-(defn- make-channel-form [form]
+(defn- distinct-channel [form]
   (case (count form)
     1 `(async/chan 1024 (distinct))
     2 (case (second form)
@@ -11,323 +11,200 @@
     form))
 
 (defmacro with-chan [[ch form] & body]
-  `(let [~ch ~(make-channel-form form)]
+  `(let [~ch ~(distinct-channel form)]
      ~@body
      ~ch))
 
-(defmulti compile* (fn [pattern]
-                     (cond
-                       (sequential? pattern) (first pattern)
-                       ((some-fn ifn? fn?) pattern) :pred)))
+(declare matcher)
 
-(defmethod compile* := [[_ value]]
-  (fn [_registry bindings data]
-    (with-chan [ch (async/chan 1)]
-      (if (= value data)
-        (async/go
-          (async/>! ch bindings)
-          (async/close! ch))
-        (async/close! ch)))))
+(defn lvar-pattern [_registry binding]
+  (fn f
+    ([data] (f {} data))
+    ([bindings data]
+     (async/go
+       (cond
+         (and (contains? bindings binding)
+              (= data (get bindings binding)))
+         bindings
 
-(defmethod compile* :? [[_ binding]]
-  (fn [_registry bindings data]
-    (with-chan [ch (async/chan 1)]
-      (async/go
-        (cond
-          (not (contains? bindings binding))
-          (async/>! ch (assoc bindings binding data))
+         (not (contains? bindings binding))
+         (assoc bindings binding data))))))
 
-          (= data (get bindings binding))
-          (async/>! ch bindings))
-        (async/close! ch)))))
+(defn mvar-pattern [_registry binding]
+  (fn f
+    ([data] (f {} data))
+    ([bindings data]
+     (async/go
+       (update bindings binding (fnil conj []) data)))))
 
-(defmethod compile* :! [[_ binding]]
-  (fn [_registry bindings data]
-    (with-chan [ch (async/chan 1)]
-      (async/go
-        (async/>! ch (update bindings binding (fnil conj []) data))
-        (async/close! ch)))))
-
-(defmethod compile* :or [[_ & patterns]]
-  (let [matchers (doall (map compile* patterns))]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (async/go-loop [ports (set (map #(% registry bindings data) matchers))]
-          (if-let [ports' (seq ports)]
-            (let [[res port] (async/alts! ports')]
-              (if res
-                (do (async/>! ch res)
-                    (recur ports))
-                (recur (disj ports port))))
-            (async/close! ch)))))))
-
-(defmethod compile* :orn [[_ {:keys [key]} & binding-forms]]
-  (let [matchers (into {} (map (fn [[value pattern]]
-                                 [value (compile* pattern)]))
-                       binding-forms)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (let [binding-ports (into {} (map (fn [[value matcher]]
-                                            [(matcher registry bindings data) value]))
-                                  matchers)]
-          (async/go-loop [ports (set (keys binding-ports))]
-            (if-let [ports' (seq ports)]
-              (let [[res port] (async/alts! ports')]
-                (if res
-                  (do (async/>! ch (assoc res key (get binding-ports port)))
-                      (recur ports))
-                  (recur (disj ports port))))
-              (async/close! ch))))))))
-
-(defn chain [[matcher & matchers]]
-  (if matcher
-    (let [post-fn (chain matchers)]
-      (fn [registry bindings data]
+(defn- and-matcher [matchers]
+  (if (seq matchers)
+    (let [[matcher & matchers] matchers
+          next-matcher (and-matcher matchers)]
+      (fn [bindings data]
         (with-chan [ch (async/chan)]
-          (let [ch' (matcher registry bindings data)]
-            (async/go-loop []
-              (if-let [res (async/<! ch')]
-                (let [ch'' (post-fn registry res data)]
-                  (loop []
-                    (when-let [res (async/<! ch'')]
+          (async/go-loop [port-1 (matcher bindings data)]
+            (if-let [res (async/<! port-1)]
+              (do (loop [port-2 (next-matcher res data)]
+                    (when-let [res (async/<! port-2)]
                       (async/>! ch res)
-                      (recur)))
-                  (recur))
-                (async/close! ch)))))))
-    (fn [_registry bindings _data]
-      (with-chan [ch (async/chan)]
-        (async/go
-          (async/>! ch bindings)
-          (async/close! ch))))))
+                      (recur port-2)))
+                  (recur port-1))
+              (async/close! ch))))))
+    (fn [bindings _data]
+      (async/go bindings))))
 
-(defmethod compile* :and [[_ & patterns]]
-  (let [matchers (doall (map compile* patterns))
-        chain (chain matchers)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (let [in-ch (chain registry bindings data)]
-          (async/go-loop []
-            (if-let [res (async/<! in-ch)]
-              (do (async/>! ch res)
-                  (recur))
-              (async/close! ch))))))))
+(defn and-pattern [registry & patterns]
+  (let [matchers (doall (map (partial matcher registry) patterns))
+        chain (and-matcher matchers)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (with-chan [ch (async/chan)]
+         (async/go-loop [port (chain bindings data)]
+           (if-let [res (async/<! port)]
+             (do (async/>! ch res)
+                 (recur port))
+             (async/close! ch))))))))
 
-(defmethod compile* :not [[_ pattern]]
-  (let [matcher (compile* pattern)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan 1)]
-        (let [in-ch (matcher registry bindings data)]
-          (async/go
-            (if (async/<! in-ch)
-              (async/close! ch)
-              (do (async/>! ch bindings)
-                  (async/close! ch)))))))))
+(defn or-pattern [registry & patterns]
+  (let [matchers (doall (map (partial matcher registry) patterns))]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (with-chan [ch (async/chan)]
+         (async/go-loop [ports (set (map #(% bindings data) matchers))]
+           (if-let [ports' (seq ports)]
+             (let [[res port] (async/alts! ports')]
+               (if (some? res)
+                 (do (async/>! ch res)
+                     (recur ports))
+                 (recur (disj ports port))))
+             (async/close! ch))))))))
 
-(defmethod compile* :enum [[_ & values]]
-  (compile* (vec (cons :or (map #(vector := %) values)))))
+(defn orn-pattern [registry {:keys [key]} & named-forms]
+  (let [matchers (into {} (map (fn [[name pattern]]
+                                 [name (matcher registry pattern)]))
+                       named-forms)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (with-chan [ch (async/chan)]
+         (let [binding-ports (into {} (map (fn [[name matcher]]
+                                             [(matcher bindings data) name]))
+                                   matchers)]
+           (async/go-loop [ports (set (keys binding-ports))]
+             (if-let [ports' (seq ports)]
+               (let [[res port] (async/alts! ports')]
+                 (if res
+                   (do (async/>! ch (assoc res key (get binding-ports port)))
+                       (recur ports))
+                   (recur (disj ports port))))
+               (async/close! ch)))))))))
 
-(defmethod compile* :pred [predicate]
-  (fn [_ bindings data]
-    (with-chan [ch (async/chan 1)]
-      (if (predicate data)
-        (async/go
-          (async/>! ch bindings)
-          (async/close! ch))
-        (async/close! ch)))))
+(defn not-pattern [registry pattern]
+  (let [matcher (matcher registry pattern)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (let [port (matcher bindings data)]
+         (async/go
+           (when-not (async/<! port)
+             bindings)))))))
 
-(defmethod compile* :ref [[_ ref]]
-  (fn [registry bindings data]
-    ((get registry ref) registry bindings data)))
-
-(defn sequential-chain [matcher]
-  (fn [registry bindings data]
-    (if (empty? data)
-      (with-chan [ch (async/chan)]
-        (async/go
-          (async/>! ch bindings)
-          (async/close! ch)))
-      (with-chan [ch (async/chan)]
-        (let [ch' (matcher registry bindings (first data))]
-          (async/go-loop []
-            (if-let [res (async/<! ch')]
-              (let [post-fn (sequential-chain matcher)
-                    ch'' (post-fn registry res (rest data))]
-                (loop []
-                  (when-let [res (async/<! ch'')]
-                    (async/>! ch res)
-                    (recur)))
-                (recur))
-              (async/close! ch))))))))
-
-(defn- compile-homogeneous-sequence [pred pattern]
-  (let [matcher (compile* pattern)
-        chain (sequential-chain matcher)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (if (pred data)
-          (let [in-ch (chain registry bindings data)]
-            (async/go-loop []
-              (if-let [res (async/<! in-ch)]
-                (do (async/>! ch res)
-                    (recur))
-                (async/close! ch))))
-          (async/close! ch))))))
-
-(defmethod compile* :sequential [[_ pattern]]
-  (compile-homogeneous-sequence sequential? pattern))
-
-(defmethod compile* :vector [[_ pattern]]
-  (compile-homogeneous-sequence vector? pattern))
-
-(defn cat-chain [[matcher & matchers]]
+(defn- sequential-matcher [[matcher & matchers]]
   (if matcher
-    (let [post-fn (cat-chain matchers)]
-      (fn [registry bindings data]
+    (let [post-fn (sequential-matcher matchers)]
+      (fn [bindings data]
         (with-chan [ch (async/chan)]
           (if (empty? data)
             (async/close! ch)
-            (let [ch' (matcher registry bindings (first data))]
+            (let [ch' (matcher bindings (first data))]
               (async/go-loop []
                 (if-let [res (async/<! ch')]
-                  (let [ch'' (post-fn registry res (rest data))]
+                  (let [ch'' (post-fn res (rest data))]
                     (loop []
                       (when-let [res (async/<! ch'')]
                         (async/>! ch res)
                         (recur)))
                     (recur))
                   (async/close! ch))))))))
-    (fn [_registry bindings _data]
-      (with-chan [ch (async/chan 1)]
-        (async/go
-          (async/>! ch bindings)
-          (async/close! ch))))))
+    (fn [bindings _data]
+      (async/go bindings))))
 
-(defmethod compile* :tuple [[_ & patterns]]
-  (let [matchers (doall (map compile* patterns))
-        chain (cat-chain matchers)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (if (= (count matchers)
-               (count data))
-          (let [in-ch (chain registry bindings data)]
-            (async/go-loop []
-              (if-let [res (async/<! in-ch)]
-                (do (async/>! ch res)
-                    (recur))
-                (async/close! ch))))
-          (async/close! ch))))))
+(defn tuple-pattern [registry & patterns]
+  (let [matchers (doall (map (partial matcher registry) patterns))
+        matcher (sequential-matcher matchers)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (if (= (count matchers)
+              (count data))
+         (with-chan [ch (async/chan)]
+           (let [port (matcher bindings data)]
+             (async/go-loop []
+               (if-let [res (async/<! port)]
+                 (do (async/>! ch res)
+                     (recur))
+                 (async/close! ch)))))
+         (async/go nil))))))
 
-(defmethod compile* :cat [[_ & patterns]]
-  (let [matchers (doall (map compile* patterns))
-        chain (cat-chain matchers)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (if (sequential? data)
-          (let [in-ch (chain registry bindings data)]
-            (async/go-loop []
-              (if-let [res (async/<! in-ch)]
-                (do (async/>! ch res)
-                    (recur))
-                (async/close! ch))))
-          (async/close! ch))))))
+(defn- dynamic-key? [registry [k-pattern _]]
+  (and (vector? k-pattern) (contains? @registry (first k-pattern))))
 
-(defn repeat-chain
-  ([matcher]
-   (repeat-chain matcher 0 ##Inf 0))
-  ([matcher min]
-   (repeat-chain matcher min ##Inf 0))
-  ([matcher min max]
-   (repeat-chain matcher min max 0))
-  ([matcher min max current]
-   (fn [registry bindings data]
-     (with-chan [ch (async/chan)]
+(defn- fixed-map-pattern [registry kv-patterns continuation]
+  (let [matchers (into {} kv-patterns)
+        keys (keys matchers)
+        extractor (when (not-empty keys) (apply juxt keys))
+        matcher (matcher registry (vec (list* :tuple (mapv matchers keys))))]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
        (cond
-         (empty? data)
-         (async/go
-           (if (>= current min)
-             (async/>! ch bindings)
-             (async/close! ch)))
+         (empty? keys)
+         (continuation bindings data)
 
-         (> current max)
-         (async/close! ch)
+         (every? #(contains? data %) keys)
+         (if-let [data' (not-empty (extractor data))]
+           (let [data'' (reduce dissoc data keys)]
+             (with-chan [ch (async/chan)]
+               (async/go-loop [port-1 (matcher bindings data')]
+                 (if-let [res (async/<! port-1)]
+                   (do (loop [port-2 (continuation res data'')]
+                         (when-let [res (async/<! port-2)]
+                           (async/>! ch res)
+                           (recur port-2)))
+                       (recur port-1))
+                   (async/close! ch)))))
+           (continuation bindings data))
 
          :else
-         (let [post-fn (repeat-chain matcher min max (inc current))
-               ch' (matcher registry bindings (first data))]
-           (async/go-loop []
-             (if-let [res (async/<! ch')]
-               (let [ch'' (post-fn bindings res (rest data))]
-                 (loop []
-                   (when-let [res (async/<! ch'')]
-                     (async/>! ch res)
-                     (recur))))
-               (async/close! ch)))))))))
+         (async/go nil))))))
 
-(defmethod compile* :* [[_ pattern]]
-  (let [matcher (compile* pattern)
-        chain (repeat-chain matcher)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (if (sequential? data)
-          (let [in-ch (chain registry bindings data)]
-            (async/go-loop []
-              (if-let [res (async/<! in-ch)]
-                (do (async/>! ch res)
-                    (recur))
-                (async/close! ch))))
-          (async/close! ch))))))
-
-(defmethod compile* :+ [[_ pattern]]
-  (let [matcher (compile* pattern)
-        chain (repeat-chain matcher 1)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (if (sequential? data)
-          (let [in-ch (chain registry bindings data)]
-            (async/go-loop []
-              (if-let [res (async/<! in-ch)]
-                (do (async/>! ch res)
-                    (recur))
-                (async/close! ch))))
-          (async/close! ch))))))
-
-(defmethod compile* :search [[_ pattern]]
-  (let [matcher (compile* pattern)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (async/go-loop [ports (set (map #(matcher registry bindings %) data))]
-          (if-let [ports' (seq ports)]
-            (let [[res port] (async/alts! ports')]
-              (if res
-                (do (async/>! ch res)
-                    (recur ports))
-                (recur (disj ports port))))
-            (async/close! ch)))))))
-
-(defn map-chain [patterns]
-  (if-let [[[k-pattern v-pattern] & patterns] (seq patterns)]
-    (let [k-matcher (compile* k-pattern)
-          v-matcher (compile* v-pattern)
-          chain (map-chain patterns)]
-      (fn [registry bindings data]
-        (with-chan [ch (async/chan)]
-          (let [k-chain (fn [k]
-                          (with-chan [ch' (async/chan)]
-                            (let [k-port (k-matcher registry bindings k)]
-                              (async/go-loop []
-                                (if-let [res (async/<! k-port)]
-                                  (let [v-port (v-matcher registry res (get data k))]
-                                    (loop []
-                                      (when-let [res (async/<! v-port)]
-                                        (let [port (chain registry res (dissoc data k))]
-                                          (loop []
-                                            (when-let [res (async/<! port)]
-                                              (async/>! ch' res)
-                                              (recur))))
-                                        (recur)))
-                                    (recur))
-                                  (async/close! ch'))))))]
-            (if-let [keys (keys data)]
+(defn- dynamic-map-pattern [registry kv-patterns]
+  (if-let [[[k-pattern v-pattern] & kv-patterns] (seq kv-patterns)]
+    (let [k-matcher (matcher registry k-pattern)
+          v-matcher (matcher registry v-pattern)
+          chain (dynamic-map-pattern registry kv-patterns)]
+      (fn [bindings data]
+        (if-let [keys (keys data)]
+          (with-chan [ch (async/chan)]
+            (let [k-chain (fn [k]
+                            (with-chan [ch' (async/chan)]
+                              (let [k-port (k-matcher bindings k)]
+                                (async/go-loop []
+                                  (if-let [res (async/<! k-port)]
+                                    (let [v-port (v-matcher res (get data k))]
+                                      (loop []
+                                        (when-let [res (async/<! v-port)]
+                                          (let [port (chain res (dissoc data k))]
+                                            (loop []
+                                              (when-let [res (async/<! port)]
+                                                (async/>! ch' res)
+                                                (recur))))
+                                          (recur)))
+                                      (recur))
+                                    (async/close! ch'))))))]
               (async/go-loop [ports (into #{} (map k-chain) keys)]
                 (if-let [ports' (seq ports)]
                   (let [[res port] (async/alts! ports')]
@@ -335,39 +212,82 @@
                       (do (async/>! ch res)
                           (recur ports))
                       (recur (disj ports port))))
-                  (async/close! ch)))
-              (async/close! ch))))))
-    (fn [_registry bindings _data]
-      (with-chan [ch (async/chan 1)]
-        (async/go
-          (async/>! ch bindings)
-          (async/close! ch))))))
+                  (async/close! ch)))))
+          (async/go nil))))
+    (fn [bindings _data]
+      (async/go bindings))))
 
-(defmethod compile* :map [[_ & kv-patterns]]
-  (let [matcher (map-chain kv-patterns)]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (if (map? data)
-          (async/go-loop [port (matcher registry bindings data)]
-            (if-let [res (async/<! port)]
-              (do
-                (async/>! ch res)
-                (recur port))
-              (async/close! ch)))
-          (async/close! ch))))))
+(defn map-pattern [registry & kv-patterns]
+  (let [{fixed-keys false dynamic-keys true}
+        (group-by (partial dynamic-key? registry) kv-patterns)
+        dynamic-map-matcher (dynamic-map-pattern registry dynamic-keys)
+        fixed-map-matcher (fixed-map-pattern registry fixed-keys dynamic-map-matcher)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (if (map? data)
+         (with-chan [ch (async/chan)]
+           (async/go-loop [port (fixed-map-matcher bindings data)]
+             (if-let [res (async/<! port)]
+               (do (async/>! ch res)
+                   (recur port))
+               (async/close! ch))))
+         (async/go nil))))))
 
-(defn set-chain [matchers]
+(defn- sequence-of-matcher [matcher]
+  (fn [bindings data]
+    (if (empty? data)
+      (async/go bindings)
+      (let [continuation (sequence-of-matcher matcher)]
+        (with-chan [ch (async/chan)]
+          (async/go-loop [port-1 (matcher bindings (first data))]
+            (if-let [res (async/<! port-1)]
+              (do (loop [port-2 (continuation res (rest data))]
+                    (when-let [res (async/<! port-2)]
+                      (async/>! ch res)
+                      (recur port-2)))
+                  (recur port-1))
+              (async/close! ch))))))))
+
+(defn map-of-pattern [registry k-pattern v-pattern]
+  (let [matcher (sequence-of-matcher (matcher registry [:tuple k-pattern v-pattern]))]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (if (map? data)
+         (matcher bindings data)
+         (async/go nil))))))
+
+(defn vector-pattern [registry pattern]
+  (let [matcher (sequence-of-matcher (matcher registry pattern))]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (if (vector? data)
+         (matcher bindings data)
+         (async/go nil))))))
+
+(defn sequential-pattern [registry pattern]
+  (let [matcher (sequence-of-matcher (matcher registry pattern))]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (if (sequential? data)
+         (matcher bindings data)
+         (async/go nil))))))
+
+(defn- set-matcher [matchers]
   (if-let [[matcher & matchers] (seq matchers)]
-    (let [chain (set-chain matchers)]
-      (fn [registry bindings data]
+    (let [continuation (set-matcher matchers)]
+      (fn [bindings data]
         (with-chan [ch (async/chan)]
           (let [ports (into #{}
                             (map (fn [el]
                                    (with-chan [ch (async/chan)]
-                                     (async/go-loop [port (matcher registry bindings el)]
+                                     (async/go-loop [port (matcher bindings el)]
                                        (if-let [res (async/<! port)]
                                          (do
-                                           (loop [port (chain registry res (disj data el))]
+                                           (loop [port (continuation res (disj data el))]
                                              (when-let [res (async/<! port)]
                                                (async/>! ch res)
                                                (recur port)))
@@ -382,178 +302,338 @@
                         (recur ports))
                     (recur (disj ports port))))
                 (async/close! ch)))))))
-    (fn [_registry bindings _data]
-      (with-chan [ch (async/chan 1)]
-        (async/go
-          (async/>! ch bindings)
-          (async/close! ch))))))
+    (fn [bindings _data]
+      (async/go bindings))))
 
-(defmethod compile* :set [[_ & v-patterns]]
-  (let [matcher (set-chain (doall (map compile* v-patterns)))]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (if (set? data)
-          (async/go-loop [port (matcher registry bindings data)]
-            (if-let [res (async/<! port)]
-              (do
-                (async/>! ch res)
-                (recur port))
-              (async/close! ch)))
-          (async/close! ch))))))
-
-(defmethod compile* :set-of [[_ v-pattern]]
-  (let [matcher (compile* [:sequential v-pattern])]
-    (fn [registry bindings data]
-      (with-chan [ch (async/chan)]
-        (if (set? data)
-          (async/go-loop [port (matcher registry bindings (seq data))]
-            (if-let [res (async/<! port)]
-              (do (async/>! ch res)
-                  (recur port))
-              (async/close! ch)))
-          (async/close! ch))))))
-
-(defmethod compile* :guard [[_ guard-fn]]
-  (fn [_registry bindings data]
-    (with-chan [ch (async/chan)]
-      (async/go
-        (let [results (guard-fn bindings data)
-              results (cond
-                        (map? results) (list results)
-                        (sequential? results) (seq results)
-                        (nil? results) ())]
-          (doseq [result results]
-            (async/>! ch result))
-          (async/close! ch))))))
-
-(defn compile [pattern]
-  (let [matcher (compile* pattern)]
-    (fn m
-      ([data]
-       (m {} {} data))
+(defn set-pattern [registry & patterns]
+  (let [matcher (set-matcher (doall (map (partial matcher registry) patterns)))]
+    (fn f
+      ([data] (f {} data))
       ([bindings data]
-       (m {} bindings data))
-      ([registry bindings data]
-       (matcher registry bindings data)))))
+       (if (and (set? data)
+                (>= (count data) (count patterns)))
+         (matcher bindings data)
+         (async/go nil))))))
+
+(defn set-of-pattern [registry pattern]
+  (let [matcher (sequential-matcher (matcher registry pattern))]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (if (set? data)
+         (matcher bindings (seq data))
+         (async/go nil))))))
+
+(defn enum-pattern [registry & values]
+  (matcher registry (vec (list* :or (map #(vector := %) values)))))
+
+(defn- compare-matcher [operator value]
+  (fn f
+    ([data] (f {} data))
+    ([bindings data]
+     (async/go
+       (when (operator data value)
+         bindings)))))
+
+(defn maybe-pattern [registry pattern]
+  (let [matcher (matcher registry pattern)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (if (nil? data)
+         (async/go bindings)
+         (matcher bindings data))))))
+
+(defn multi-pattern [registry {:keys [dispatch]} & patterns]
+  (let [matchers (into {}
+                       (map (fn [[dispatch-value pattern]]
+                              [dispatch-value (matcher registry pattern)]))
+                       patterns)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (let [dispatch-value (dispatch data)]
+         (if-let [matcher (matchers dispatch-value (:default matchers))]
+           (matcher bindings data)
+           (async/go nil)))))))
+
+(defn- fn-builder [form]
+  ;; TODO check which sci options might be usefull
+  (sci/eval-form (sci/init {}) form))
+
+(defn dynamic-predicate-pattern [_registry form]
+  (let [predicate (fn-builder form)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (async/go (when (predicate data) bindings))))))
+
+(defn ref-pattern [registry pattern-id]
+  (fn f
+    ([data] (f {} data))
+    ([bindings data]
+     (if-let [matcher (get-in @registry [::dynamic pattern-id])]
+       (matcher bindings data)
+       ;; TODO this should be an unknown pattern error
+       (async/go nil)))))
+
+(defn schema-pattern [registry named-patterns pattern]
+  (let [named-patterns (into {}
+                             (map (fn [[name pattern]]
+                                    [name (matcher registry pattern)]))
+                             named-patterns)
+        _ (swap! registry update ::dynamic merge named-patterns)
+        matcher (matcher registry pattern)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (matcher bindings data)))))
+
+(defn guard-pattern [_registry function]
+  (let [function (if (and (vector? function) (= :fn (first function)))
+                   (fn-builder (second function))
+                   function)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (let [results (function bindings data)]
+         (cond
+           (map? results)
+           (async/go results)
+
+           (and (sequential? results)
+                (every? map? results))
+           (with-chan [ch (async/chan)]
+             (async/go-loop [results results]
+               (if-let [[result & results] results]
+                 (do (async/>! ch result)
+                     (recur results))
+                 (async/close! ch))))
+
+           :else
+           (async/go nil)))))))
+
+(defn- repeat-matcher [min max matcher]
+  (letfn [(step [bindings data current]
+            (cond
+              (> current max)
+              (async/go nil)
+
+              (empty? data)
+              (async/go (when (>= current min) bindings))
+
+              :else
+              (with-chan [ch (async/chan)]
+                (async/go-loop [port-1 (matcher bindings (first data))]
+                  (if-let [res (async/<! port-1)]
+                    (do (loop [port-2 (step res (rest data) (inc current))]
+                          (when-let [res (async/<! port-2)]
+                            (async/>! ch res)
+                            (recur port-2)))
+                        (recur port-1))
+                    (async/close! ch))))))]
+    (fn [bindings data]
+      (if (sequential? data)
+        (step bindings data 0)
+        (async/go nil)))))
+
+(defn repeat-pattern
+  ([registry pattern]
+   (repeat-pattern registry {} pattern))
+  ([registry {:keys [min max]
+              :or {min 0
+                   max ##Inf}} pattern]
+   (let [matcher (repeat-matcher min max (matcher registry pattern))]
+     (fn f
+       ([data] (f {} data))
+       ([bindings data]
+        (matcher bindings data))))))
+
+(defn cat-pattern [registry & patterns]
+  (let [matcher (sequential-matcher (doall (map (partial matcher registry) patterns)))
+        size (count patterns)]
+    (fn f
+      ([data] (f {} data))
+      ([bindings data]
+       (if (and (sequential? data)
+                (>= (count data) size))
+         (matcher bindings data)
+         (async/go nil))))))
+
+(defn alt-pattern [registry & patterns]
+  (let [pattern [:repeat (vec (list* :or patterns))]]
+    (matcher registry pattern)))
+
+(defn base-patterns []
+  {::? #'lvar-pattern
+   ::! #'mvar-pattern
+   ::guard #'guard-pattern
+   :and #'and-pattern
+   :or #'or-pattern
+   :orn #'orn-pattern
+   :not #'not-pattern
+   :map #'map-pattern
+   :map-of #'map-of-pattern
+   :vector #'vector-pattern
+   :sequential #'sequential-pattern
+   :set #'set-pattern
+   :set-of #'set-of-pattern
+   :enum #'enum-pattern
+   :maybe #'maybe-pattern
+   :tuple #'tuple-pattern
+   :multi #'multi-pattern
+   ;; :re
+   :fn #'dynamic-predicate-pattern
+   :ref #'ref-pattern
+   :schema #'schema-pattern})
+
+(defn comparator-patterns []
+  (into {}
+        (map (fn [[k operator]]
+               [k (fn [_ value]
+                    (compare-matcher operator value))]))
+        {:> >, :>= >=, :< <, :<= <=, := =, :not= not=}))
+
+(defn predicate-patterns []
+  (reduce
+   (fn [acc predicate]
+     (let [builder (fn [_registry]
+                     (fn f
+                       ([data] (f {} data))
+                       ([bindings data]
+                        (async/go (when (predicate data) bindings)))))
+           name (-> predicate meta :name)
+           keyword (keyword name)]
+       (assoc acc
+              name builder
+              keyword builder
+              @predicate builder)))
+   {}
+   [#'any? #'some? #'number? #'integer? #'int? #'pos-int? #'neg-int? #'nat-int? #'pos? #'neg? #'float? #'double?
+    #'boolean? #'string? #'ident? #'simple-ident? #'qualified-ident? #'keyword? #'simple-keyword?
+    #'qualified-keyword? #'symbol? #'simple-symbol? #'qualified-symbol? #'uuid? #'uri? #?(:clj #'decimal?)
+    #'inst? #'seqable? #'indexed? #'map? #'vector? #'list? #'seq? #'char? #'set? #'nil? #'false? #'true?
+    #'zero? #?(:clj #'rational?) #'coll? #'empty? #'associative? #'sequential? #?(:clj #'ratio?) #?(:clj #'bytes?)]))
+
+(defn type-patterns []
+  (reduce
+   (fn [acc [key predicate]]
+     (let [builder (fn [_registry]
+                     (fn f
+                       ([data] (f {} data))
+                       ([bindings data]
+                        (async/go (when (predicate data) bindings)))))]
+       (assoc acc key builder)))
+   {}
+   {:any #'any?
+    :nil #'nil?
+    :string #'string?
+    :int #'int?
+    :double #'double?
+    :boolean #'boolean?
+    :keyword #'keyword?
+    :symbol #'symbol?
+    :qualified-keyword #'qualified-keyword?
+    :qualified-symbol #'qualified-symbol?
+    :uuid #'uuid?}))
+
+(defn sequence-patterns []
+  {:+ #(repeat-pattern %1 {:min 1} %2)
+   :* #(repeat-pattern %1 {} %2)
+   :? #(repeat-pattern %1 {:min 0 :max 1} %2)
+   :repeat #'repeat-pattern
+   :cat #'cat-pattern
+   :alt #'alt-pattern})
+
+(defn default-patterns-registry []
+  (atom (merge (base-patterns)
+               (comparator-patterns)
+               (predicate-patterns)
+               (type-patterns)
+               (sequence-patterns))))
+
+(defn matcher
+  ([pattern]
+   (matcher (default-patterns-registry) pattern))
+  ([registry pattern]
+   (let [token (if (vector? pattern) (first pattern) pattern)
+         args (if (vector? pattern) (rest pattern) [])]
+     (if-let [builder (get @registry token)]
+       (apply builder (list* registry args))
+       (throw (ex-info "Undefined instruction token" {:token token}))))))
 
 (comment
 
-  (let [plus-guard (fn f
-                     ([key] (f key 0))
-                     ([key k]
-                      (fn [bindings data]
-                        (if-let [binding (and (contains? bindings key)
-                                              (get bindings key))]
-                          (when (= data (+ binding k))
-                            bindings)
-                          (assoc bindings key (- data k))))))
-        matcher (compile [:orn {:key :hand}
-                          [:strait-flush [:set
-                                          [:tuple [:? :suit] [:guard (plus-guard :rank)]]
-                                          [:tuple [:? :suit] [:guard (plus-guard :rank 1)]]
-                                          [:tuple [:? :suit] [:guard (plus-guard :rank 2)]]
-                                          [:tuple [:? :suit] [:guard (plus-guard :rank 3)]]
-                                          [:tuple [:? :suit] [:guard (plus-guard :rank 4)]]]]
-                          [:strait [:set
-                                    [:tuple any? [:guard (plus-guard :rank)]]
-                                    [:tuple any? [:guard (plus-guard :rank 1)]]
-                                    [:tuple any? [:guard (plus-guard :rank 2)]]
-                                    [:tuple any? [:guard (plus-guard :rank 3)]]
-                                    [:tuple any? [:guard (plus-guard :rank 4)]]]]
-                          [:royal-flush [:set
-                                         [:tuple [:? :suit] [:= 10]]
-                                         [:tuple [:? :suit] [:= 11]]
-                                         [:tuple [:? :suit] [:= 12]]
-                                         [:tuple [:? :suit] [:= 13]]
-                                         [:tuple [:? :suit] [:= 14]]]]
-                          [:four-of-kind [:set
-                                          any?
-                                          [:tuple any? [:? :rank]]
-                                          [:tuple any? [:? :rank]]
-                                          [:tuple any? [:? :rank]]
-                                          [:tuple any? [:? :rank]]]]
-                          [:three-of-kind [:set
-                                           any?
-                                           any?
-                                           [:tuple any? [:? :rank]]
-                                           [:tuple any? [:? :rank]]
-                                           [:tuple any? [:? :rank]]]]
-                          [:full-house [:set
-                                        [:tuple any? [:? :full]]
-                                        [:tuple any? [:? :full]]
-                                        [:tuple any? [:? :full]]
-                                        [:tuple any? [:? :house]]
-                                        [:tuple any? [:? :house]]]]
-                          [:pair [:set
-                                  any?
-                                  any?
-                                  any?
-                                  [:tuple any? [:? :rank]]
-                                  [:tuple any? [:? :rank]]]]
-                          [:two-pairs [:set
-                                       any?
-                                       [:tuple any? [:? :rank-1]]
-                                       [:tuple any? [:? :rank-1]]
-                                       [:tuple any? [:? :rank-2]]
-                                       [:tuple any? [:? :rank-2]]]]
-                          [:flush [:set-of [:tuple [:? :suit] any?]]]
-                          [:highest-card [:set-of [:tuple any? [:guard (fn [{:keys [rank] :as bindings} data]
-                                                                         (if (some? rank)
-                                                                           (if (>= data rank)
-                                                                             (assoc bindings :rank data)
-                                                                             bindings)
-                                                                           {:rank data}))]]]]])
-        samples [#{[:♠ 10] [:♠ 11] [:♠ 12] [:♠ 13] [:♠ 14]}
-                 #{[:♠ 5] [:♦ 5] [:♠ 7] [:♣ 5] [:♥ 5]}
-                 #{[:♠ 5] [:♦ 5] [:♠ 7] [:♣ 5] [:♥ 7]}
-                 #{[:♠ 5] [:♠ 6] [:♠ 7] [:♠ 13] [:♠ 9]}
-                 #{[:♠ 5] [:♦ 5] [:♠ 7] [:♣ 5] [:♥ 8]}
-                 #{[:♠ 5] [:♦ 10] [:♠ 7] [:♣ 5] [:♥ 10]}
-                 #{[:♠ 5] [:♠ 6] [:♠ 7] [:♠ 8] [:♠ 9]}
-                 #{[:♠ 5] [:♣ 6] [:♠ 7] [:♠ 8] [:♠ 9]}]
-        sample (rand-nth samples)]
-    (time
-     (dotimes [_ 100]
-       (async/<!! (async/go-loop [acc [] port (matcher sample)]
-                    (if-let [res (async/<! port)]
-                      (recur (conj acc res) port)
-                      acc)))))
-    (async/<!! (async/go-loop [acc [] port (matcher sample)]
+  (defn <all [port]
+    (async/<!! (async/go-loop [acc []]
                  (if-let [res (async/<! port)]
-                   (recur (conj acc res) port)
+                   (recur (conj acc res))
                    acc))))
 
-  (async/<!! ((compile [:set [:= 1]]) #{1}))
+  (<all ((matcher [::? :x]) 42))
 
-  (let [ch ((compile [:and [:ref ::number] [:? :x]]) {::number (compile number?)} {} "")]
-    (async/<!! ch))
+  (<all ((matcher [::! :x]) 42))
 
-  (async/<!! ((compile [:enum "foo" "bar" "baz"]) "baz"))
+  (<all ((matcher [:and [::? :x] [::! :y]]) 42))
 
-  (async/<!! ((compile [:sequential [:and int? [:? :x]]]) (list 1 1 1)))
+  (<all ((matcher [:or [::? :x] [::? :y]]) 42))
 
-  (async/<!! ((compile [:not string?]) ""))
+  (<all ((matcher [:orn {:key :branch} [:1 [::? :x]] [:2 [::? :x]]]) 42))
 
-  (async/<!! ((compile [:tuple int? int?]) [1 1]))
+  (<all ((matcher [:not [:and [::! :x] [::? :x]]]) 42))
 
-  (async/<!! ((compile [:cat [:! :x] [:! :x] [:! :x]]) '("" 0 2.3)))
+  (<all ((matcher [:tuple [::? :x] [::? :y]]) [1 2]))
 
-  (async/<!! ((compile [:* int?]) []))
-
-  (async/<!! ((compile [:+ int?]) [1]))
-
-  (let [matcher (compile [:set [:= 1] [:= 6] [:? :x]])]
+  (let [m (matcher [:map
+                    [:x [::? :x]]
+                    [:y [::? :y]]
+                    [[::? :extra-key] [::? :extra-value]]
+                    [[::? :extra-key-2] [::? :extra-value-2]]])]
     (time
-     (dotimes [_ 1000]
-       (let [ch (matcher #{1 2 3 4 5 6})]
-         (async/<!! (async/go-loop [acc [] ch ch]
-                      (if-let [res (async/<! ch)]
-                        (recur (conj acc res) ch)
-                        acc)))))))
+     (dotimes [_ 10000]
+       (<all (m {:x 1 :y 2 :l 3 :n 4 :m 5}))))
+    (<all (m {:x 1 :y 2 :l 3 :n 4 :m 5})))
 
-  ;; [:and [:? :x] [:? :y] [:= 42]]
-  ;;          |       |       |
-  ;;        ( r )   ( r )   ( r )
-  ;;
+  (<all ((matcher [:map-of [::! :key] [::! :value]]) {:x 1 :y 2}))
+
+  (<all ((matcher [:set [::? :x] [::? :y] [::? :z]]) #{1 2}))
+
+  (<all ((matcher [:enum 1 2 3]) 2))
+
+  (<all ((matcher [:not= 42]) 41))
+
+  (<all ((matcher [:vector :int?]) [1 2 3 ]))
+
+  (<all ((matcher [:schema {:step [:map
+                                   [[::! :path] [:or
+                                                 [:ref :step]
+                                                 [:and
+                                                  [:not :map?]
+                                                  [::? :value]]]]]}
+                   [:ref :step]])
+         {:x 1
+          :y {:z 2}}))
+
+  (<all ((matcher [:map [[::! :path] [::? :value]]]) {:x 1 :y 2}))
+
+  (<all ((matcher [:multi {:dispatch :type}
+                   [:sized [:map
+                            [:type keyword?]
+                            [:size int?]]]
+                   [:human [:map
+                            [:type keyword?]
+                            [:name string?]
+                            [:address [:map
+                                       [:country keyword?]]]]]])
+         {:type :sized, :size 10}))
+
+  (<all ((matcher [:repeat {:min 2 :max 5} [:and int? [::! :el]]])
+         [1 2 3 4 5 6]))
+
+  (<all ((matcher [:? int?]) [1]))
+
+  (<all ((matcher [:+ int?]) [1 2]))
+
+  (<all ((matcher [:* int?]) []))
 
   )
