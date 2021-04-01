@@ -6,7 +6,7 @@
 
 (defn match-result [actual expected]
   (t/is (not= :timeout! actual))
-  (t/is (= (set actual) (set expected))))
+  (t/is (= (set expected) (set actual))))
 
 (defn test-async [ch expected]
   #?(:clj (match-result (async/<!! ch) expected)
