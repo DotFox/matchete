@@ -1,0 +1,18 @@
+{
+  "name": "matchete",
+  "version": "1.0.0",
+  "description": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DotFox/matchete.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/DotFox/matchete/issues"
+  },
+  "homepage": "https://github.com/DotFox/matchete#readme",
+  "dependencies": {
+    "ws": "^7.4.4"
+  }
+}

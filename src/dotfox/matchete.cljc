@@ -1,5 +1,6 @@
 (ns dotfox.matchete
-  (:require [clojure.core.async :as async]
+  (:require #?(:clj [clojure.core.async :as async]
+               :cljs [cljs.core.async :as async])
             [clojure.set :as set]))
 
 ;; === utils ===
@@ -9,11 +10,6 @@
     ([data] (f {} data))
     ([bindings data]
      (matcher bindings data))))
-
-(defn matcher->seq-matcher [matcher]
-  (fn [bindings data]
-    (async/pipe (matcher bindings (first data))
-                (async/chan 1024 (comp (distinct) (map (fn [res] [1 res])))))))
 
 (defn seq-matcher->top-level-seq-matcher [matcher]
   (fn [bindings data]
@@ -34,22 +30,27 @@
   ([buf-or-n xform ex-handler]
    (async/chan buf-or-n (if (some? xform) (comp (distinct) xform) (distinct)) ex-handler)))
 
+(defn matcher->seq-matcher [matcher]
+  (fn [bindings data]
+    (async/pipe (matcher bindings (first data))
+                (distinct-chan 1024 (map (fn [res] [1 res]))))))
+
 (defn combine-matchers [matchers]
   (if (seq matchers)
-     (let [[matcher & matchers] matchers
-           continuation (combine-matchers matchers)]
-       (fn [bindings data]
-         (let [out-ch (distinct-chan)
-               port (matcher bindings data)]
-           (async/go-loop [ports []]
-             (if-let [res (async/<! port)]
-               (recur (conj ports (continuation res data)))
-               (if (seq ports)
-                 (async/pipe (async/merge (vec ports)) out-ch)
-                 (async/close! out-ch))))
-           out-ch)))
-     (fn [bindings _data]
-       (async/to-chan! [bindings]))))
+    (let [[matcher & matchers] matchers
+          continuation (combine-matchers matchers)]
+      (fn [bindings data]
+        (let [out-ch (distinct-chan)
+              port (matcher bindings data)]
+          (async/go-loop [ports []]
+            (if-let [res (async/<! port)]
+              (recur (conj ports (continuation res data)))
+              (if (seq ports)
+                (async/pipe (async/merge (vec ports)) out-ch)
+                (async/close! out-ch))))
+          out-ch)))
+    (fn [bindings _data]
+      (async/to-chan! [bindings]))))
 
 (defn consuming-sequence-matcher [matchers]
   (if (seq matchers)
@@ -72,7 +73,7 @@
                   (async/close! out-ch)))))
           out-ch)))
     (fn [bindings _data]
-      (async/to-chan! [0 bindings]))))
+      (async/to-chan! [[0 bindings]]))))
 
 (defn repeat-matcher* [min max counter matcher]
   (letfn [(match-and-continue [bindings data]
@@ -93,7 +94,7 @@
                     (async/close! out-ch))))
               out-ch))
           (success-and-close [bindings]
-            (async/to-chan [0 bindings]))]
+            (async/to-chan! [0 bindings]))]
     (cond
       (< counter min)
       (fn [bindings data]
@@ -147,6 +148,20 @@
     (if *seq-context*
       (matcher->seq-matcher mvar-matcher*)
       mvar-matcher*)))
+
+(defn scan-matcher [registry pattern]
+  (let [matcher (binding [*seq-context* false]
+                  (matcher registry pattern))
+        scan-matcher* (fn [bindings data]
+                        (if (sequential? data)
+                          (async/pipe (async/merge (mapv (fn [el]
+                                                           (matcher bindings el))
+                                                         data))
+                                      (distinct-chan))
+                          (async/to-chan! [])))]
+    (if *seq-context*
+      (matcher->seq-matcher scan-matcher*)
+      scan-matcher*)))
 
 (defn fresh-matcher [registry {:keys [merge-fn]} pattern]
   (let [merge-fn (if *seq-context*
@@ -488,6 +503,7 @@
 (defn logic-matchers []
   {::? #'lvar-matcher
    ::! #'mvar-matcher
+   ::scan #'scan-matcher
    ::fresh #'fresh-matcher
    ::inter #'interceptor-matcher
    ::fn #'functional-matcher})
@@ -593,15 +609,24 @@
 
 ;; === api ===
 
+(def ^:dynamic *external-call* true)
+
 (defn matcher
   ([pattern]
    (matcher (default-matchers-registry) pattern))
   ([registry pattern]
-   (let [token (if (vector? pattern) (first pattern) pattern)
-         args (if (vector? pattern) (rest pattern) [])]
-     (if-let [builder (get @registry token)]
-       (apply builder (list* registry args))
-       (throw (ex-info "Undefined instruction token" {:token token}))))))
+   (if *external-call*
+     (let [m (binding [*external-call* false]
+               (matcher registry pattern))]
+       (fn matcher
+         ([data] (matcher {} data))
+         ([bindings data]
+          (m bindings data))))
+     (let [token (if (vector? pattern) (first pattern) pattern)
+           args (if (vector? pattern) (rest pattern) [])]
+       (if-let [builder (get @registry token)]
+         (apply builder (list* registry args))
+         (throw (ex-info "Undefined instruction token" {:token token})))))))
 
 ;; ===
 
