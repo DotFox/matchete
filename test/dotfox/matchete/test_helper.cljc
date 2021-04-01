@@ -15,27 +15,27 @@
                                       (match-result result expected)
                                       (done))))))
 
+(defmacro target [& {:keys [cljs clj]}]
+  (if (contains? &env '&env)
+    `(if (:ns ~'&env) ~cljs ~clj)
+    (if #?(:clj (:ns &env) :cljs true)
+      cljs
+      clj)))
+
 (defmacro is-match? [form expected & [timeout]]
   `(let [result-chan# ~form
-         timeout-chan# (~(if (contains? &env :js-globals)
-                           'cljs.core.async/timeout
-                           'clojure.core.async/timeout)
-                        (or ~timeout 5000))]
+         timeout-chan#
+         (~(target :clj 'clojure.core.async/timeout :cljs 'cljs.core.async/timeout)
+          (or ~timeout 5000))]
      (test-async
-      (~(if (contains? &env :js-globals)
-          'cljs.core.async/go-loop
-          'clojure.core.async/go-loop)
+      (~(target :clj 'clojure.core.async/go-loop :cljs 'cljs.core.async/go-loop)
        [results# []]
-       (let [[res# port#] (~(if (contains? &env :js-globals)
-                              'cljs.core.async/alts!
-                              'clojure.core.async/alts!)
+       (let [[res# port#] (~(target :clj 'clojure.core.async/alts! :cljs 'cljs.core.async/alts!)
                            [result-chan# timeout-chan#])]
          (if (some? res#)
            (if (= port# timeout-chan#)
              (do
-               (~(if (contains? &env :js-globals)
-                   'cljs.core.async/close!
-                   'clojure.core.async/close!)
+               (~(target :clj 'clojure.core.async/close! :cljs 'cljs.core.async/close!)
                 result-chan#)
                :timeout!)
              (recur (conj results# res#)))
