@@ -94,7 +94,7 @@
                     (async/close! out-ch))))
               out-ch))
           (success-and-close [bindings]
-            (async/to-chan! [0 bindings]))]
+            (async/to-chan! [[0 bindings]]))]
     (cond
       (< counter min)
       (fn [bindings data]
