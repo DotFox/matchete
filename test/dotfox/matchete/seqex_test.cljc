@@ -10,7 +10,7 @@
                           [:and [:* [:= "A"]] [::m/? :pre]]
                           [:and [:+ [:= "A"]] [::m/? :post]]])
               (repeat 10 "A"))
-             #{{:pre '() :post '("A" "A" "A" "A" "A" "A" "A" "A" "A" "A")}
+             #{{:pre () :post '("A" "A" "A" "A" "A" "A" "A" "A" "A" "A")}
                {:pre '("A") :post '("A" "A" "A" "A" "A" "A" "A" "A" "A")}
                {:pre '("A" "A") :post '("A" "A" "A" "A" "A" "A" "A" "A")}
                {:pre '("A" "A" "A") :post '("A" "A" "A" "A" "A" "A" "A")}
