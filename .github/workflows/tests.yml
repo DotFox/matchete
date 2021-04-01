@@ -55,3 +55,7 @@ jobs:
     - name: Run JVM tests
       run: |
         ./bin/kaocha unit --plugin cloverage
+
+    - name: Run NodeJS tests
+      run: |
+        ./bin/kaocha unit-cljs

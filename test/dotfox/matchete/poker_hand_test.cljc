@@ -1,6 +1,6 @@
 (ns dotfox.matchete.poker-hand-test
   (:require [dotfox.matchete :as m]
-            [dotfox.matchete.test-helper :refer [match?]]
+            [dotfox.matchete.test-helper :refer [are-match?] :include-macros true]
             #?(:clj [clojure.test :refer [deftest are] :as t]
                :cljs [cljs.test :refer [deftest are] :as t :include-macros true])))
 
@@ -72,7 +72,7 @@
         [:highest-card [:set-of [:tuple any? [::m/fn high-card]]]]])))
 
 (deftest poker
-  (are [hand expected] (match? (poker-hand-matcher hand) expected)
+  (are-match? [hand expected] ((poker-hand-matcher hand) expected)
     #{[:♠ 5] [:♦ 11] [:♠ 6] [:♠ 7] [:♠ 8]}
     #{{:rank 11, :hand :highest-card}}
 

@@ -1,2 +1,3 @@
 {:lint-as
- {clojure.core.async/<!! clojure.core.async/<!}}
+ {clojure.core.async/<!! clojure.core.async/<!
+  dotfox.matchete.test-helper/are-match? clojure.test/are}}
