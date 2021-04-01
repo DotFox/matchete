@@ -1,8 +1,8 @@
 (ns dotfox.matchete.poker-hand-test
   (:require [dotfox.matchete :as m]
             [dotfox.matchete.test-helper :refer [are-match?] :include-macros true]
-            #?(:clj [clojure.test :refer [deftest are] :as t]
-               :cljs [cljs.test :refer [deftest are] :as t :include-macros true])))
+            #?(:clj [clojure.test :refer [deftest] :as t]
+               :cljs [cljs.test :refer [deftest] :as t :include-macros true])))
 
 (def poker-hand-matcher
     (letfn [(plus-match-fn
