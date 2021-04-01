@@ -23,9 +23,14 @@ jobs:
       with:
         cli: '1.10.3.814'
 
+    - uses: DeLaGuardo/setup-clj-kondo@master
+      with:
+        version: '2021.03.31'
+
     - uses: actions/checkout@v2.3.4
 
-    - uses: actions/cache@v2
+    - name: Cache node dependencies
+      uses: actions/cache@v2
       with:
         path: |
           ~/.npm
@@ -52,6 +57,19 @@ jobs:
     - name: Prepare clojure dependencies
       run: |
         clojure -P -A:test
+
+    - name: Cache clj-kondo
+      uses: actions/cache@v2.1.4
+      with:
+        path: |
+          .clj-kondo/.cache
+        key: ${{ runner.os }}-clj-kondo-${{ hashFiles('.clj-kondo/config.edn') }}
+        restore-keys: |
+          ${{ runner.os }}-clj-kondo-
+
+    - name: Lint source code
+      run: |
+        clj-kondo --lint src --lint test
 
     - name: Run tests
       run: |

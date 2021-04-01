@@ -1,1 +1,2 @@
-{:config-paths ["dev.dotfox/matchete"]}
+{:lint-as
+ {clojure.core.async/<!! clojure.core.async/<!}}
