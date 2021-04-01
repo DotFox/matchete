@@ -13,4 +13,5 @@
           ;; :cljs/repl-env cljs.repl.browser/repl-env
           }]
  ;; :reporter kaocha.report.progress/report
- :plugins [:kaocha.plugin/cloverage :kaocha.plugin/notifier :kaocha.plugin/profiling]}
+ ;; :plugins [:kaocha.plugin/cloverage]
+ }
