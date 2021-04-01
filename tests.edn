@@ -8,10 +8,5 @@
           :source-paths ["src"]
           :test-paths ["test"]
           :ns-patterns [".*-test"]
-          ;; :cljs/timeout 10000                        ; 10 seconds, the default
-          ;; :cljs/repl-env cljs.repl.node/repl-env     ; node is the default
-          ;; :cljs/repl-env cljs.repl.browser/repl-env
-          }]
- ;; :reporter kaocha.report.progress/report
- ;; :plugins [:kaocha.plugin/cloverage]
- }
+          :cljs/timeout 60000
+          :cljs/repl-env cljs.repl.node/repl-env}]}

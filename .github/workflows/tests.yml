@@ -48,15 +48,6 @@ jobs:
       run: |
         clojure -P -A:test
 
-    - name: Cache clj-kondo
-      uses: actions/cache@v2.1.4
-      with:
-        path: |
-          .clj-kondo/.cache
-        key: ${{ runner.os }}-clj-kondo-${{ hashFiles('.clj-kondo/config.edn') }}
-        restore-keys: |
-          ${{ runner.os }}-clj-kondo-
-
     - name: Lint source code
       run: |
         clj-kondo --lint src --lint test
