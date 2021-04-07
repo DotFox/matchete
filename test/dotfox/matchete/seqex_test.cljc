@@ -7,8 +7,8 @@
 
 (deftest basic
   (is-match? ((m/matcher [:cat
-                          [:and [:* [:= "A"]] [::m/? :pre]]
-                          [:and [:+ [:= "A"]] [::m/? :post]]])
+                          [:and [:* [:= "A"]] [:lvar :pre]]
+                          [:and [:+ [:= "A"]] [:lvar :post]]])
               (repeat 10 "A"))
              #{{:pre () :post '("A" "A" "A" "A" "A" "A" "A" "A" "A" "A")}
                {:pre '("A") :post '("A" "A" "A" "A" "A" "A" "A" "A" "A")}

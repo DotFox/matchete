@@ -42,7 +42,9 @@
            results#)))
       ~expected)))
 
-(defmacro are-match? [argv expr & args]
+(defmacro are-match?
+  {:style/indent 2}
+  [argv expr & args]
   (if (or
        ;; (are [] true) is meaningless but ok
        (and (empty? argv) (empty? args))
