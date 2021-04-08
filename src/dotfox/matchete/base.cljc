@@ -1,95 +1,97 @@
-(ns dotfox.matchete.base
-  (:require [clojure.core.async :as async]
-            [dotfox.matchete.async :refer [distinct-chan]]))
+(ns dotfox.matchete.base)
 
 (defn epsilon []
   (fn [bindings _data]
-    (async/to-chan! [bindings])))
+    (lazy-seq
+     (cons bindings nil))))
 
 (defn lvar-matcher [binding]
   (fn [bindings data]
     (cond
       (and (contains? bindings binding)
            (= data (get bindings binding)))
-      (async/to-chan! [bindings])
+      (list bindings)
 
       (not (contains? bindings binding))
-      (async/to-chan! [(assoc bindings binding data)])
+      (list (assoc bindings binding data))
 
-      :else (async/to-chan! []))))
+      :else nil)))
 
 (defn mvar-matcher [binding]
   (fn [bindings data]
-    (async/to-chan! [(update bindings binding (fnil conj []) data)])))
+    (list (update bindings binding (fnil conj []) data))))
 
-(defn wrap-matcher [in-fn out-fn matcher]
+(defn wrap-matcher [{:keys [entry exit]
+                     :or {entry list
+                          exit list}} matcher]
   (fn [bindings data]
-    (let [[bindings data] (in-fn bindings data)]
-      (async/pipe (matcher bindings data)
-                  (distinct-chan (comp (mapcat (fn [result]
-                                                 (let [result (out-fn result)]
-                                                   (if (map? result) [result] result))))
-                                       (keep identity)))))))
+    (sequence
+     (comp (mapcat exit)
+           (keep identity))
+     (apply matcher (entry bindings data)))))
+
+(defn cross-join [seqs]
+  (letfn [(step [seqs]
+            (lazy-seq
+             (when-not (empty? seqs)
+               (if-let [el (ffirst seqs)]
+                 (cons el (step (concat (rest seqs) (list (rest (first seqs))))))
+                 (step (rest seqs))))))]
+    (sequence
+     (distinct)
+     (step seqs))))
 
 (defn and-matcher [matchers]
   (if (seq matchers)
     (let [[matcher & matchers] matchers
           continuation (and-matcher matchers)]
       (fn [bindings data]
-        (let [out-ch (distinct-chan)
-              port (matcher bindings data)]
-          (async/go-loop [ports []]
-            (if-let [res (async/<! port)]
-              (recur (conj ports (continuation res data)))
-              (async/pipe (async/merge ports) out-ch)))
-          out-ch)))
-    (epsilon)))
+        (cross-join (for [res (matcher bindings data)]
+                      (continuation res data)))))
+    (fn [bindings _data]
+      (list bindings))))
 
 (defn or-matcher [matchers]
   (fn [bindings data]
-    (async/pipe (async/merge (mapv #(% bindings data) matchers)) (distinct-chan))))
+    (cross-join (map #(% bindings data) matchers))))
 
 (defn orn-matcher [branch-key matchers]
-  (let [matchers (mapv (fn [[branch matcher]]
-                         (wrap-matcher vector #(assoc % branch-key branch) matcher))
-                       matchers)]
+  (let [matchers (mapv
+                  (fn [[branch-value matcher]]
+                    (wrap-matcher {:exit (fn [bindings]
+                                           [(assoc bindings branch-key branch-value)])}
+                                  matcher))
+                  matchers)]
     (or-matcher matchers)))
 
 (defn not-matcher [matcher]
   (fn [bindings data]
-    (let [port (matcher bindings data)
-          out-ch (async/chan 1)]
-      (async/go
-        (if (async/<! port)
-          (async/close! out-ch)
-          (do (async/>! out-ch bindings)
-              (async/close! out-ch))))
-      out-ch)))
+    (when-not (first (matcher bindings data))
+      (list bindings))))
 
 (defn maybe-matcher [matcher]
   (fn [bindings data]
-    (let [port1 (matcher bindings data)
-          port2 (async/to-chan! [bindings])
-          out-ch (distinct-chan)]
-      (async/pipe (async/merge [port1 port2]) out-ch))))
+    (cons bindings (matcher bindings data))))
 
 (defn regex-matcher [regex]
   (fn [bindings data]
-    (async/to-chan!
-     (when (and (string? data) (re-matches regex data))
-       [bindings]))))
+    (when (and (string? data) (re-matches regex data))
+      (list bindings))))
 
 (defn multi-matcher [dispatch-fn matchers]
   (fn [bindings data]
     (let [dispatch-value (dispatch-fn data)]
-      (if-let [matcher (get matchers dispatch-value)]
-        (matcher bindings data)
-        (async/to-chan! nil)))))
+      (when-let [matcher (get matchers dispatch-value)]
+        (matcher bindings data)))))
 
 (defn pred-matcher [pred]
   (fn [bindings data]
-    (async/to-chan! (when (pred data) [bindings]))))
+    (when (pred data)
+      (list bindings))))
 
 (defn function-matcher [f]
   (fn [bindings data]
-    (async/to-chan! (f bindings data))))
+    (when-let [res (seq (f bindings data))]
+      (cond
+        (map? res) (list res)
+        (sequential? res) res))))

@@ -1,22 +1,20 @@
 (ns dotfox.matchete.seqex-test
   (:require [dotfox.matchete :as m]
-            [dotfox.matchete.test-helper :refer [is-match?]
-             #?@(:cljs [:include-macros true])]
-            #?(:clj [clojure.test :refer [deftest] :as t]
-               :cljs [cljs.test :refer [deftest] :as t :include-macros true])))
+            #?(:clj [clojure.test :refer [deftest is] :as t]
+               :cljs [cljs.test :refer [deftest is] :as t :include-macros true])))
 
 (deftest basic
-  (is-match? ((m/matcher [:cat
-                          [:and [:* [:= "A"]] [:lvar :pre]]
-                          [:and [:+ [:= "A"]] [:lvar :post]]])
-              (repeat 10 "A"))
-             #{{:pre () :post '("A" "A" "A" "A" "A" "A" "A" "A" "A" "A")}
-               {:pre '("A") :post '("A" "A" "A" "A" "A" "A" "A" "A" "A")}
-               {:pre '("A" "A") :post '("A" "A" "A" "A" "A" "A" "A" "A")}
-               {:pre '("A" "A" "A") :post '("A" "A" "A" "A" "A" "A" "A")}
-               {:pre '("A" "A" "A" "A") :post '("A" "A" "A" "A" "A" "A")}
-               {:pre '("A" "A" "A" "A" "A") :post '("A" "A" "A" "A" "A")}
-               {:pre '("A" "A" "A" "A" "A" "A") :post '("A" "A" "A" "A")}
-               {:pre '("A" "A" "A" "A" "A" "A" "A") :post '("A" "A" "A")}
-               {:pre '("A" "A" "A" "A" "A" "A" "A" "A") :post '("A" "A")}
-               {:pre '("A" "A" "A" "A" "A" "A" "A" "A" "A") :post '("A")}}))
+  (is (= [{:pre ["A" "A" "A" "A" "A" "A" "A" "A" "A"], :post ["A"]}
+          {:pre ["A" "A" "A" "A" "A" "A" "A" "A"], :post ["A" "A"]}
+          {:pre ["A" "A" "A" "A" "A" "A" "A"], :post ["A" "A" "A"]}
+          {:pre ["A" "A" "A" "A" "A" "A"], :post ["A" "A" "A" "A"]}
+          {:pre ["A" "A" "A" "A" "A"], :post ["A" "A" "A" "A" "A"]}
+          {:pre ["A" "A" "A" "A"], :post ["A" "A" "A" "A" "A" "A"]}
+          {:pre ["A" "A" "A"], :post ["A" "A" "A" "A" "A" "A" "A"]}
+          {:pre ["A" "A"], :post ["A" "A" "A" "A" "A" "A" "A" "A"]}
+          {:pre ["A"], :post ["A" "A" "A" "A" "A" "A" "A" "A" "A"]}
+          {:post ["A" "A" "A" "A" "A" "A" "A" "A" "A" "A"]}]
+         ((m/matcher [:cat
+                      [:* [:and [:= "A"] [:mvar :pre]]]
+                      [:+ [:and [:= "A"] [:mvar :post]]]])
+          (repeat 10 "A")))))

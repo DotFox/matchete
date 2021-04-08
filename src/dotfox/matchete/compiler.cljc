@@ -17,7 +17,7 @@
 
 (defn wrap [registry [_ {:keys [enter leave]} pattern]]
   (let [matcher (base-compile registry pattern)]
-    (base/wrap-matcher enter leave matcher)))
+    (base/wrap-matcher {:entry enter :exit leave} matcher)))
 
 (defn and* [registry [_ & patterns]]
   (let [matchers (mapv (partial base-compile registry) patterns)]
@@ -175,36 +175,21 @@
 (defn seqexp-eps [_ _]
   (seqexp/epsilon))
 
-(defn seqexp-lvar [_ [_ binding]]
-  (seqexp/lvar-matcher binding))
-
-(defn seqexp-mvar [_ [_ binding]]
-  (seqexp/mvar-matcher binding))
-
 (defn seqexp-and [registry [_ & patterns]]
-  (base/and-matcher (map (partial seqexp-compile registry) patterns)))
-
-(defn seqexp-or [registry [_ & patterns]]
-  (base/or-matcher (map (partial seqexp-compile registry) patterns)))
-
-(defn seqexp-orn [registry [_ {:keys [branch-key]} & patterns]]
-  (let [matchers (into {}
-                       (map (fn [[branch-value pattern]]
-                              [branch-value (base-compile registry pattern)]))
-                       patterns)]
-    (base/orn-matcher branch-key matchers)))
-
-(defn seqexp-not [registry [_ pattern]]
-  (seqexp/not-matcher (seqexp-compile registry pattern)))
-
-(defn seqexp-maybe [registry [_ pattern]]
-  (seqexp/maybe-matcher (seqexp-compile registry pattern)))
+  (seqexp/and-matcher (map (partial seqexp-compile registry) patterns)))
 
 (defn seqexp-cat [registry [_ & patterns]]
   (seqexp/cat-matcher (map (partial seqexp-compile registry) patterns)))
 
 (defn seqexp-alt [registry [_ & patterns]]
-  (seqexp/alt-matcher (map (partial seqexp-compile registry) patterns)))
+  (base/or-matcher (map (partial seqexp-compile registry) patterns)))
+
+(defn seqexp-altn [registry [_ {:keys [branch-key]} & patterns]]
+  (let [matchers (into {}
+                       (map (fn [[branch-value pattern]]
+                              [branch-value (seqexp-compile registry pattern)]))
+                       patterns)]
+    (base/orn-matcher branch-key matchers)))
 
 (defn seqexp-repeat [registry [_ {:keys [min max]} pattern]]
   (seqexp/repeat-matcher min max (seqexp-compile registry pattern)))
@@ -216,13 +201,14 @@
        (assoc acc token (fn [registry pattern]
                           (let [matcher (compiler registry pattern)
                                 size-key (keyword seqexp/this-ns (name (gensym)))]
-                            (base/wrap-matcher (fn [bindings data]
-                                                 [(assoc bindings size-key (count data)) data])
-                                               (fn [{::seqexp/keys [consumed] :as bindings}]
-                                                 (let [original-size (get bindings size-key)]
-                                                   (when (= original-size consumed)
-                                                     (dissoc bindings ::seqexp/consumed size-key))))
-                                               matcher))))))
+                            (base/wrap-matcher
+                             {:entry (fn [bindings data]
+                                       [(assoc bindings size-key (count data)) data])
+                              :exit (fn [{::seqexp/keys [consumed] :as bindings}]
+                                      (let [original-size (get bindings size-key)]
+                                        (when (= original-size consumed)
+                                          [(dissoc bindings ::seqexp/consumed size-key)])))}
+                             matcher))))))
    {::seqexp/registry
     (reduce-kv
      (fn [acc token [min max]]
@@ -230,20 +216,15 @@
                         (seqexp/repeat-matcher min max (seqexp-compile registry pattern)))]
          (assoc acc token compiler)))
      {:eps seqexp-eps
-      :lvar seqexp-lvar
-      :mvar seqexp-mvar
       :and seqexp-and
-      :or seqexp-or
-      :orn seqexp-orn
-      :not seqexp-not
-      :maybe seqexp-maybe
       :cat seqexp-cat
       :alt seqexp-alt
+      :altn seqexp-altn
       :repeat seqexp-repeat}
      {:* [0 ##Inf]
       :+ [1 ##Inf]
       :? [0 1]})}
-   [:cat :alt :repeat :* :+ :?]))
+   [:cat :alt :altn :repeat :* :+ :?]))
 
 (def default-registry
   (merge (base-registry)
@@ -290,8 +271,8 @@
   (let [[token & _ :as pattern'] (normalize registry pattern)]
     ((get registry token) registry pattern')))
 
-(defn compile*
-  ([pattern] (compile* nil pattern))
+(defn compile
+  ([pattern] (compile nil pattern))
   ([registry pattern]
    (let [registry (reduce-kv
                    (fn [acc k v]
@@ -300,5 +281,3 @@
                    default-registry
                    registry)]
      (base-compile registry pattern))))
-
-(def compile (memoize compile*))
