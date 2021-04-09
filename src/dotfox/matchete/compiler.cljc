@@ -64,6 +64,10 @@
 (defn function [_ [_ f]]
   (base/function-matcher f))
 
+(defn ref* [{::keys [custom]} [_ id]]
+  (fn [bindings data]
+    ((get @custom id) bindings data)))
+
 (defn base-registry []
   {:eps epsilon
    :lvar lvar
@@ -77,7 +81,8 @@
    :re re
    :multi multi
    :pred pred
-   :fn function})
+   :fn function
+   :ref ref*})
 
 (defn pred-registry []
   (reduce
@@ -149,14 +154,14 @@
   (collection/map-matcher
    (map
     (fn [[key-pattern value-pattern]]
-      (base-compile registry [:tuple {} key-pattern value-pattern]))
+      (base-compile registry [:tuple key-pattern value-pattern]))
     patterns)))
 
 (defn map-of [registry [_ key-pattern value-pattern]]
-  (collection/map-of-matcher (base-compile registry [:tuple {} key-pattern value-pattern])))
+  (collection/map-of-matcher (base-compile registry [:tuple key-pattern value-pattern])))
 
-(defn search [registry [_ pattern]]
-  (collection/search-matcher (base-compile registry pattern)))
+(defn search [registry [_ & patterns]]
+  (apply collection/search-matcher (map (partial base-compile registry) patterns)))
 
 (defn collection-registry []
   {:list sequence*
@@ -226,21 +231,26 @@
       :? [0 1]})}
    [:cat :alt :altn :repeat :* :+ :?]))
 
-(def default-registry
+(defn default-registry []
   (merge (base-registry)
          (pred-registry)
          (compare-registry)
          (types-registry)
          (collection-registry)
-         (seqexp-registry)))
+         (seqexp-registry)
+         {::custom (atom {})}))
 
 (defn normalize [registry pattern]
   (cond
-    (and (vector? pattern) (contains? registry (first pattern)))
+    (and (vector? pattern)
+         (contains? registry (first pattern)))
     pattern
 
     (contains? registry pattern)
     [pattern]
+
+    (contains? @(::custom registry) pattern)
+    [:ref pattern]
 
     (map? pattern)
     (vec (list* :map (seq pattern)))
@@ -275,9 +285,9 @@
   ([pattern] (compile nil pattern))
   ([registry pattern]
    (let [registry (reduce-kv
-                   (fn [acc k v]
-                     (assoc-in acc [::custom k]
-                               (base-compile acc v)))
-                   default-registry
+                   (fn [{::keys [custom] :as acc} k v]
+                     (swap! custom assoc k (base-compile acc v))
+                     acc)
+                   (default-registry)
                    registry)]
      (base-compile registry pattern))))

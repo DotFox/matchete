@@ -3,7 +3,7 @@
 (defn epsilon []
   (fn [bindings _data]
     (lazy-seq
-     (cons bindings nil))))
+     (list bindings))))
 
 (defn lvar-matcher [binding]
   (fn [bindings data]

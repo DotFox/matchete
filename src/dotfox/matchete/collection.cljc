@@ -51,14 +51,14 @@
       (when (set? data)
         (matcher bindings (seq data))))))
 
-(defn map-matcher* [map-entry-matcher]
-  (if (seq map-entry-matcher)
-    (let [[matcher & matchers] map-entry-matcher
+(defn map-matcher* [map-entry-matchers]
+  (if (seq map-entry-matchers)
+    (let [[matcher & matchers] map-entry-matchers
           continuation (map-matcher* matchers)]
       (fn [bindings data]
         (cross-join (for [[k _ :as map-entry] data
                           res (matcher bindings map-entry)
-                          data' (dissoc data k)]
+                          :let [data' (dissoc data k)]]
                       (continuation res data')))))
     (epsilon)))
 
@@ -75,26 +75,20 @@
       (when (map? data)
         (matcher bindings (seq data))))))
 
-(defn search-matcher [matcher]
-  (fn search-matcher* [bindings data]
-    (when (and (sequential? data) (seq data))
-      (cross-join (map #(matcher bindings %) data)))))
+(defn search-matcher
+  ([value-matcher] (search-matcher (epsilon) value-matcher))
+  ([index-matcher value-matcher]
+   (let [matcher (tuple-matcher [index-matcher value-matcher])]
+     (fn [bindings data]
+       (cond
+         (map? data)
+         (cross-join (map (fn [[k value]]
+                            (matcher bindings [k value]))
+                          data))
 
-(comment
+         (coll? data)
+         (cross-join (map-indexed (fn [i value]
+                                    (matcher bindings [i value]))
+                                  data))
 
-  ((sequence-matcher [(base/pred-matcher #(= 5 %))
-                      (base/pred-matcher #(= 6 %))])
-   {} [5 6])
-
-  ((sequence-of-matcher (base/pred-matcher int?))
-   {} [1 1])
-
-  ((set-matcher* [(base/and-matcher [(base/pred-matcher int?)
-                                     (base/lvar-matcher :x)])
-                  (base/and-matcher [(base/pred-matcher any?)
-                                     (base/lvar-matcher :y)])
-                  (base/and-matcher [(base/pred-matcher any?)
-                                     (base/lvar-matcher :z)])])
-   {} #{1 "" true {}})
-
-  )
+         :else ())))))

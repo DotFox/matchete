@@ -30,8 +30,8 @@
   (let [pattern [:search [:and int? [:lvar :x]]]
         matcher (m/matcher pattern)]
     (are [x y] (= y (matcher x))
-      42 nil
-      [] nil
+      42 []
+      [] []
       [42] [{:x 42}]
       [42 42] [{:x 42}]
       [42 43] [{:x 42} {:x 43}]
