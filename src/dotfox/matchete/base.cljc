@@ -33,10 +33,9 @@
 (defn cross-join [seqs]
   (letfn [(step [seqs]
             (lazy-seq
-             (when-not (empty? seqs)
-               (if-let [el (ffirst seqs)]
-                 (cons el (step (concat (rest seqs) (list (rest (first seqs))))))
-                 (step (rest seqs))))))]
+             (let [seqs (keep seq seqs)]
+               (when (seq seqs)
+                 (concat (map first seqs) (step (map rest seqs)))))))]
     (sequence
      (distinct)
      (step seqs))))
