@@ -2,6 +2,6 @@
  :deps {}
 
  :aliases {:test {:extra-paths ["test"]
-                  :extra-deps {lambdaisland/kaocha {:mvn/version "1.0.829"}
+                  :extra-deps {lambdaisland/kaocha {:mvn/version "1.0.861"}
                                lambdaisland/kaocha-cljs {:mvn/version "0.0-71"}
                                lambdaisland/kaocha-cloverage {:mvn/version "1.0.75"}}}}}

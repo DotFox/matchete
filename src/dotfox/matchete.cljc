@@ -1,5 +1,6 @@
 (ns dotfox.matchete
-  (:require [dotfox.matchete.compiler :as compiler]))
+  (:require
+   [dotfox.matchete.compiler :as compiler]))
 
 (defn matcher
   ([pattern] (matcher nil pattern))

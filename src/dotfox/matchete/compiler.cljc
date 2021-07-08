@@ -1,8 +1,9 @@
 (ns dotfox.matchete.compiler
   (:refer-clojure :exclude [compile])
-  (:require [dotfox.matchete.base :as base]
-            [dotfox.matchete.collection :as collection]
-            [dotfox.matchete.seqexp :as seqexp]))
+  (:require
+   [dotfox.matchete.base :as base]
+   [dotfox.matchete.collection :as collection]
+   [dotfox.matchete.seqexp :as seqexp]))
 
 (declare base-compile)
 
@@ -28,9 +29,9 @@
 
 (defn orn [registry [_ {:keys [branch-key]} & patterns]]
   (let [matchers (into {}
-                       (map (fn [[branch-value pattern]]
-                              [branch-value (base-compile registry pattern)]))
-                       patterns)]
+                   (map (fn [[branch-value pattern]]
+                          [branch-value (base-compile registry pattern)]))
+                   patterns)]
     (base/orn-matcher branch-key matchers)))
 
 (defn not* [registry [_ pattern]]
@@ -41,21 +42,21 @@
 
 (defn re [_ [_ regex]]
   (base/regex-matcher
-   (cond
-     (string? regex)
-     (re-pattern regex)
+    (cond
+      (string? regex)
+      (re-pattern regex)
 
-     (instance? #?(:clj java.util.regex.Pattern :cljs js/RegExp) regex)
-     regex
+      (instance? #?(:clj java.util.regex.Pattern :cljs js/RegExp) regex)
+      regex
 
-     :else
-     (throw (ex-info "Expect pattern or string" {})))))
+      :else
+      (throw (ex-info "Expect pattern or string" {})))))
 
 (defn multi [registry [_ {:keys [dispatch-fn]} & patterns]]
   (let [matchers (into {}
-                       (map (fn [[dispatch-value pattern]]
-                              [dispatch-value (base-compile registry pattern)]))
-                       patterns)]
+                   (map (fn [[dispatch-value pattern]]
+                          [dispatch-value (base-compile registry pattern)]))
+                   patterns)]
     (base/multi-matcher dispatch-fn matchers)))
 
 (defn pred [registry [_ pred]]
@@ -86,54 +87,54 @@
 
 (defn pred-registry []
   (reduce
-   (fn [acc pred]
-     (let [name (-> pred meta :name)
-           key (keyword name)
-           pred @pred
-           matcher (base/pred-matcher pred)
-           compiler (fn [_ _] matcher)]
-       (assoc acc
-              name compiler
-              key compiler
-              pred compiler)))
-   {}
-   [#'any? #'some? #'number? #'integer? #'int? #'pos-int? #'neg-int? #'nat-int? #'pos? #'neg? #'float? #'double?
-    #'boolean? #'string? #'ident? #'simple-ident? #'qualified-ident? #'keyword? #'simple-keyword?
-    #'qualified-keyword? #'symbol? #'simple-symbol? #'qualified-symbol? #'uuid? #'uri? #?(:clj #'decimal?)
-    #'inst? #'seqable? #'indexed? #'map? #'vector? #'list? #'seq? #'char? #'set? #'nil? #'false? #'true?
-    #'zero? #?(:clj #'rational?) #'coll? #'empty? #'associative? #'sequential? #?(:clj #'ratio?) #?(:clj #'bytes?)]))
+    (fn [acc pred]
+      (let [name (-> pred meta :name)
+            key (keyword name)
+            pred @pred
+            matcher (base/pred-matcher pred)
+            compiler (fn [_ _] matcher)]
+        (assoc acc
+          name compiler
+          key compiler
+          pred compiler)))
+    {}
+    [#'any? #'some? #'number? #'integer? #'int? #'pos-int? #'neg-int? #'nat-int? #'pos? #'neg? #'float? #'double?
+     #'boolean? #'string? #'ident? #'simple-ident? #'qualified-ident? #'keyword? #'simple-keyword?
+     #'qualified-keyword? #'symbol? #'simple-symbol? #'qualified-symbol? #'uuid? #'uri? #?(:clj #'decimal?)
+     #'inst? #'seqable? #'indexed? #'map? #'vector? #'list? #'seq? #'char? #'set? #'nil? #'false? #'true?
+     #'zero? #?(:clj #'rational?) #'coll? #'empty? #'associative? #'sequential? #?(:clj #'ratio?) #?(:clj #'bytes?)]))
 
 (defn compare-registry []
   (reduce
-   (fn [acc comparator]
-     (let [name (-> comparator meta :name)
-           key (keyword name)
-           comparator @comparator
-           compiler (fn [_ [_ value]]
-                      (base/pred-matcher #(comparator % value)))]
-       (assoc acc
-              name compiler
-              key compiler
-              comparator compiler)))
-   {}
-   [#'> #'>= #'< #'<= #'= #'== #'not=]))
+    (fn [acc comparator]
+      (let [name (-> comparator meta :name)
+            key (keyword name)
+            comparator @comparator
+            compiler (fn [_ [_ value]]
+                       (base/pred-matcher #(comparator % value)))]
+        (assoc acc
+          name compiler
+          key compiler
+          comparator compiler)))
+    {}
+    [#'> #'>= #'< #'<= #'= #'== #'not=]))
 
 (defn types-registry []
   (reduce
-   (fn [acc pred]
-     (let [name (symbol (apply str (butlast (name (-> pred meta :name)))))
-           key (keyword name)
-           pred @pred
-           matcher (base/pred-matcher pred)
-           compiler (fn [_ _] matcher)]
-       (assoc acc
-              name compiler
-              key compiler)))
-   {}
-   [#'symbol? #'qualified-symbol?
-    #'keyword? #'qualified-keyword?
-    #'nil? #'string? #'double? #'int? #'boolean?
-    #'uuid? #'any?]))
+    (fn [acc pred]
+      (let [name (symbol (apply str (butlast (name (-> pred meta :name)))))
+            key (keyword name)
+            pred @pred
+            matcher (base/pred-matcher pred)
+            compiler (fn [_ _] matcher)]
+        (assoc acc
+          name compiler
+          key compiler)))
+    {}
+    [#'symbol? #'qualified-symbol?
+     #'keyword? #'qualified-keyword?
+     #'nil? #'string? #'double? #'int? #'boolean?
+     #'uuid? #'any?]))
 
 (defn sequence* [registry [_ & patterns]]
   (collection/sequence-matcher (map (partial base-compile registry) patterns)))
@@ -152,10 +153,10 @@
 
 (defn map* [registry [_ & patterns]]
   (collection/map-matcher
-   (map
-    (fn [[key-pattern value-pattern]]
-      (base-compile registry [:tuple key-pattern value-pattern]))
-    patterns)))
+    (map
+      (fn [[key-pattern value-pattern]]
+        (base-compile registry [:tuple key-pattern value-pattern]))
+      patterns)))
 
 (defn map-of [registry [_ key-pattern value-pattern]]
   (collection/map-of-matcher (base-compile registry [:tuple key-pattern value-pattern])))
@@ -191,9 +192,9 @@
 
 (defn seqexp-altn [registry [_ {:keys [branch-key]} & patterns]]
   (let [matchers (into {}
-                       (map (fn [[branch-value pattern]]
-                              [branch-value (seqexp-compile registry pattern)]))
-                       patterns)]
+                   (map (fn [[branch-value pattern]]
+                          [branch-value (seqexp-compile registry pattern)]))
+                   patterns)]
     (base/orn-matcher branch-key matchers)))
 
 (defn seqexp-repeat [registry [_ {:keys [min max]} pattern]]
@@ -201,49 +202,49 @@
 
 (defn seqexp-registry []
   (reduce
-   (fn [acc token]
-     (let [compiler (get-in acc [::seqexp/registry token])]
-       (assoc acc token (fn [registry pattern]
-                          (let [matcher (compiler registry pattern)
-                                size-key (keyword seqexp/this-ns (name (gensym)))]
-                            (base/wrap-matcher
-                             {:entry (fn [bindings data]
-                                       [(assoc bindings size-key (count data)) data])
-                              :exit (fn [{::seqexp/keys [consumed] :as bindings}]
-                                      (let [original-size (get bindings size-key)]
-                                        (when (= original-size consumed)
-                                          [(dissoc bindings ::seqexp/consumed size-key)])))}
-                             matcher))))))
-   {::seqexp/registry
-    (reduce-kv
-     (fn [acc token [min max]]
-       (let [compiler (fn [registry [_ pattern]]
-                        (seqexp/repeat-matcher min max (seqexp-compile registry pattern)))]
-         (assoc acc token compiler)))
-     {:eps seqexp-eps
-      :and seqexp-and
-      :cat seqexp-cat
-      :alt seqexp-alt
-      :altn seqexp-altn
-      :repeat seqexp-repeat}
-     {:* [0 ##Inf]
-      :+ [1 ##Inf]
-      :? [0 1]})}
-   [:cat :alt :altn :repeat :* :+ :?]))
+    (fn [acc token]
+      (let [compiler (get-in acc [::seqexp/registry token])]
+        (assoc acc token (fn [registry pattern]
+                           (let [matcher (compiler registry pattern)
+                                 size-key (keyword seqexp/this-ns (name (gensym)))]
+                             (base/wrap-matcher
+                               {:entry (fn [bindings data]
+                                         [(assoc bindings size-key (count data)) data])
+                                :exit (fn [{::seqexp/keys [consumed] :as bindings}]
+                                        (let [original-size (get bindings size-key)]
+                                          (when (= original-size consumed)
+                                            [(dissoc bindings ::seqexp/consumed size-key)])))}
+                               matcher))))))
+    {::seqexp/registry
+     (reduce-kv
+       (fn [acc token [min max]]
+         (let [compiler (fn [registry [_ pattern]]
+                          (seqexp/repeat-matcher min max (seqexp-compile registry pattern)))]
+           (assoc acc token compiler)))
+       {:eps seqexp-eps
+        :and seqexp-and
+        :cat seqexp-cat
+        :alt seqexp-alt
+        :altn seqexp-altn
+        :repeat seqexp-repeat}
+       {:* [0 ##Inf]
+        :+ [1 ##Inf]
+        :? [0 1]})}
+    [:cat :alt :altn :repeat :* :+ :?]))
 
 (defn default-registry []
-  (merge (base-registry)
-         (pred-registry)
-         (compare-registry)
-         (types-registry)
-         (collection-registry)
-         (seqexp-registry)
-         {::custom (atom {})}))
+  (merge
+    (base-registry)
+    (pred-registry)
+    (compare-registry)
+    (types-registry)
+    (collection-registry)
+    (seqexp-registry)
+    {::custom (atom {})}))
 
 (defn normalize [registry pattern]
   (cond
-    (and (vector? pattern)
-         (contains? registry (first pattern)))
+    (and (vector? pattern) (contains? registry (first pattern)))
     pattern
 
     (contains? registry pattern)
@@ -274,7 +275,7 @@
 (defn seqexp-compile [registry pattern]
   (let [[token & _ :as pattern'] (normalize registry pattern)
         compiler (get-in registry [::seqexp/registry token]
-                         (->seqexp-compiler (get registry token)))]
+                   (->seqexp-compiler (get registry token)))]
     (compiler registry pattern')))
 
 (defn base-compile [registry pattern]
@@ -285,9 +286,9 @@
   ([pattern] (compile nil pattern))
   ([registry pattern]
    (let [registry (reduce-kv
-                   (fn [{::keys [custom] :as acc} k v]
-                     (swap! custom assoc k (base-compile acc v))
-                     acc)
-                   (default-registry)
-                   registry)]
+                    (fn [{::keys [custom] :as acc} k v]
+                      (swap! custom assoc k (base-compile acc v))
+                      acc)
+                    (default-registry)
+                    registry)]
      (base-compile registry pattern))))

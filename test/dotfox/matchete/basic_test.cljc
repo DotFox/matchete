@@ -1,7 +1,8 @@
 (ns dotfox.matchete.basic-test
-  (:require [dotfox.matchete :as m]
-            #?(:clj [clojure.test :refer [deftest testing is are] :as t]
-               :cljs [cljs.test :refer [deftest testing is are] :as t :include-macros true])))
+  (:require
+   [dotfox.matchete :as m]
+   #?(:clj [clojure.test :refer [are deftest is testing] :as t]
+      :cljs [cljs.test :refer [are deftest is testing] :as t :include-macros true])))
 
 (deftest lvar-binding
   (is (= [{:x 41}] ((m/matcher [:lvar :x]) 41)))

@@ -1,5 +1,6 @@
 (ns dotfox.matchete.seqexp
-  (:require [dotfox.matchete.base :as base :refer [cross-join]]))
+  (:require
+   [dotfox.matchete.base :as base :refer [mapcat-distinct]]))
 
 (def this-ns "dotfox.matchete.seqexp")
 
@@ -8,13 +9,13 @@
 
 (defn ->seqexp-matcher [matcher]
   (base/wrap-matcher
-   {:entry (fn [{::keys [consumed] :as bindings} data]
-             [bindings (first (if consumed
-                                (drop consumed data)
-                                data))])
-    :exit (fn [bindings]
-            (list (update bindings ::consumed safe+ 1)))}
-   matcher))
+    {:entry (fn [{::keys [consumed] :as bindings} data]
+              [bindings (first (if consumed
+                                 (drop consumed data)
+                                 data))])
+     :exit (fn [bindings]
+             (list (update bindings ::consumed safe+ 1)))}
+    matcher))
 
 (defn epsilon []
   (fn [bindings _data]
@@ -26,10 +27,11 @@
           continuation (when-let [matchers (seq (rest matchers))]
                          (and-matcher matchers))]
       (fn [bindings data]
-        (cross-join (for [res (matcher bindings data)]
-                      (if continuation
-                        (continuation (dissoc res ::consumed) data)
-                        (list res))))))
+        (mapcat-distinct
+          (if continuation
+            #(continuation (dissoc % ::consumed) data)
+            list)
+          (matcher bindings data))))
     (fn [bindings _data]
       (list bindings))))
 
@@ -38,13 +40,13 @@
     (let [[matcher & matchers] matchers
           continuation (cat-matcher matchers)]
       (fn [{::keys [consumed] :as bindings} data]
-        (cross-join
-         (for [res (matcher (dissoc bindings ::consumed) data)]
-           (continuation
-            (update res ::consumed safe+ consumed)
-            (if-let [consumed (get res ::consumed)]
-              (drop consumed data)
-              data))))))
+        (mapcat-distinct
+          #(continuation
+             (update % ::consumed safe+ consumed)
+             (if-let [consumed (get % ::consumed)]
+               (drop consumed data)
+               data))
+          (matcher (dissoc bindings ::consumed) data))))
     (epsilon)))
 
 (defn alt-matcher [matchers]
@@ -67,33 +69,23 @@
           (list bindings)
 
           (< counter max)
-          (let [results (cross-join
-                         (for [res (matcher (dissoc bindings ::consumed) data)
-                               :let [consumed' (get res ::consumed)]]
-                           (repeat-matcher*
-                            (-> res
+          (let [results (mapcat-distinct
+                          (fn [[res consumed']]
+                            (repeat-matcher*
+                              (-> res
                                 (update counter-key inc)
                                 (update ::consumed safe+ consumed))
-                            (drop consumed' data))))]
+                              (drop consumed' data)))
+                          (for [res (matcher (dissoc bindings ::consumed) data)
+                                :let [consumed' (get res ::consumed)]]
+                            [res consumed']))]
             (if (>= counter min)
               (cons bindings results)
               results)))
         (sequence
-         (map #(dissoc % counter-key))
-         (repeat-matcher*
-          (assoc bindings
-                 counter-key 0
-                 ::consumed 0)
-          data))))))
-
-(comment
-
-  ((cat-matcher [(->seqexp-matcher (base/lvar-matcher :x))
-                 (->seqexp-matcher (base/lvar-matcher :y))])
-   {} [1 2])
-
-  ((cat-matcher [(and-matcher [(->seqexp-matcher (base/pred-matcher #(= % "A")))
-                               (->seqexp-matcher (base/mvar-matcher :pre))])])
-   {} ["A" "A"])
-
-  )
+          (map #(dissoc % counter-key))
+          (repeat-matcher*
+            (assoc bindings
+              counter-key 0
+              ::consumed 0)
+            data))))))

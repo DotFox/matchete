@@ -1,9 +1,15 @@
 (ns dotfox.matchete.base)
 
+(defn mapcat-distinct [map-fn coll]
+  (sequence
+    (comp
+      (mapcat map-fn)
+      (distinct))
+    coll))
+
 (defn epsilon []
   (fn [bindings _data]
-    (lazy-seq
-     (list bindings))))
+    (list bindings)))
 
 (defn lvar-matcher [binding]
   (fn [bindings data]
@@ -23,36 +29,26 @@
 
 (defn wrap-matcher [{:keys [entry exit]
                      :or {entry list
-                          exit list}} matcher]
+                          exit list}}
+                    matcher]
   (fn [bindings data]
     (sequence
      (comp (mapcat exit)
            (keep identity))
      (apply matcher (entry bindings data)))))
 
-(defn cross-join [seqs]
-  (letfn [(step [seqs]
-            (lazy-seq
-             (let [seqs (keep seq seqs)]
-               (when (seq seqs)
-                 (concat (map first seqs) (step (map rest seqs)))))))]
-    (sequence
-     (distinct)
-     (step seqs))))
-
 (defn and-matcher [matchers]
   (if (seq matchers)
     (let [[matcher & matchers] matchers
           continuation (and-matcher matchers)]
       (fn [bindings data]
-        (cross-join (for [res (matcher bindings data)]
-                      (continuation res data)))))
+        (mapcat-distinct #(continuation % data) (matcher bindings data))))
     (fn [bindings _data]
       (list bindings))))
 
 (defn or-matcher [matchers]
   (fn [bindings data]
-    (cross-join (map #(% bindings data) matchers))))
+    (mapcat-distinct #(% bindings data) matchers)))
 
 (defn orn-matcher [branch-key matchers]
   (let [matchers (mapv

@@ -1,14 +1,14 @@
 (ns dotfox.matchete.collection
-  (:require [dotfox.matchete.base :refer [cross-join epsilon] :as base]))
+  (:require
+   [dotfox.matchete.base :refer [epsilon mapcat-distinct] :as base]))
 
 (defn sequence-matcher [matchers]
   (if (seq matchers)
-    (let [[matcher & matchers] matchers
-          continuation (sequence-matcher matchers)]
+    (let [[matcher & matchers'] matchers
+          continuation (sequence-matcher matchers')]
       (fn [bindings data]
         (when (seq data)
-          (cross-join (for [res (matcher bindings (first data))]
-                        (continuation res (rest data)))))))
+          (mapcat-distinct #(continuation % (rest data)) (matcher bindings (first data))))))
     (fn [bindings _data]
       (list bindings))))
 
@@ -16,16 +16,14 @@
   (fn sequence-of-matcher* [bindings data]
     (when (sequential? data)
       (if (seq data)
-        (cross-join (for [res (matcher bindings (first data))]
-                      (sequence-of-matcher* res (rest data))))
+        (mapcat-distinct #(sequence-of-matcher* % (rest data)) (matcher bindings (first data)))
         (list bindings)))))
 
 (defn tuple-matcher [matchers]
   (let [size (count matchers)
         matcher (sequence-matcher matchers)]
     (fn [bindings data]
-      (when (and (sequential? data)
-                 (= size (count data)))
+      (when (and (sequential? data) (= size (count data)))
         (matcher bindings data)))))
 
 (defn set-matcher* [matchers]
@@ -33,9 +31,10 @@
     (let [[matcher & matchers] matchers
           continuation (set-matcher* matchers)]
       (fn [bindings data]
-        (cross-join (for [el data
-                          res (matcher bindings el)]
-                      (continuation res (disj data el))))))
+        (mapcat-distinct
+          (fn [[el res]]
+            (continuation res (disj data el)))
+          (for [el data res (matcher bindings el)] [el res]))))
     (epsilon)))
 
 (defn set-matcher [matchers]
@@ -56,10 +55,13 @@
     (let [[matcher & matchers] map-entry-matchers
           continuation (map-matcher* matchers)]
       (fn [bindings data]
-        (cross-join (for [[k _ :as map-entry] data
-                          res (matcher bindings map-entry)
-                          :let [data' (dissoc data k)]]
-                      (continuation res data')))))
+        (mapcat-distinct
+          (fn [[res data]]
+            (continuation res data))
+          (for [[k _ :as map-entry] data
+                res (matcher bindings map-entry)
+                :let [data' (dissoc data k)]]
+            [res data']))))
     (epsilon)))
 
 (defn map-matcher [map-entry-matchers]
@@ -82,13 +84,15 @@
      (fn [bindings data]
        (cond
          (map? data)
-         (cross-join (map (fn [[k value]]
-                            (matcher bindings [k value]))
-                          data))
+         (mapcat-distinct
+           (fn [[k value]]
+             (matcher bindings [k value]))
+           data)
 
          (coll? data)
-         (cross-join (map-indexed (fn [i value]
-                                    (matcher bindings [i value]))
-                                  data))
+         (mapcat-distinct
+           (fn [[i value]]
+             (matcher bindings [i value]))
+           (map-indexed vector data))
 
          :else ())))))
